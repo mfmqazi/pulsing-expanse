@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Play, Pause, RotateCcw, Check, Mic, SkipForward, Type, Languages, AlertCircle } from 'lucide-react';
-import { getCurrentPlan } from '../data/memorizationPlan';
+import { getCurrentPlan, SURAH_VERSE_COUNTS, SURAH_NAMES } from '../data/memorizationPlan';
+import HadithFooter from './HadithFooter';
 
 const Memorize = ({ setView, user, updateUserProgress }) => {
     const [verses, setVerses] = useState([]);
@@ -13,6 +14,8 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
     const [error, setError] = useState(null);
     const [showTranslation, setShowTranslation] = useState(() => JSON.parse(localStorage.getItem('showTranslation')) ?? true);
     const [showTransliteration, setShowTransliteration] = useState(() => JSON.parse(localStorage.getItem('showTransliteration')) ?? true);
+    const [reciterName, setReciterName] = useState('');
+    const [translationName, setTranslationName] = useState('');
 
     const audioRef = useRef(null);
     const recognitionRef = useRef(null);
@@ -34,7 +37,7 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
                 recognitionRef.current.stop();
             }
         };
-    }, [user?.progress?.surah]);
+    }, [user?.progress?.surah, user?.settings?.reciterId, user?.settings?.translationId]);
 
     // Sync local state with user progress when it changes (e.g. from Plan view)
     useEffect(() => {
@@ -54,8 +57,13 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
         setError(null);
         try {
             const surah = user?.progress?.surah || 1;
-            // Fetch verses with audio (7 = Alafasy), translation (85 = Sahih International), and transliteration (57)
-            const response = await fetch(`https://api.quran.com/api/v4/verses/by_chapter/${surah}?language=en&translations=85,57&audio=7&per_page=50&fields=text_uthmani,text_imlaei_simple`);
+            const reciterId = user?.settings?.reciterId || 7; // Default to Alafasy
+            const translationId = user?.settings?.translationId || 85; // Default to Sahih International
+
+            // Fetch verses with audio, translation, and transliteration
+            // Increased per_page to 300 to ensure we get all verses for even the longest Surah (Al-Baqarah: 286)
+            // This prevents the issue where starting at verse > 50 resets to 0 because the verse wasn't loaded.
+            const response = await fetch(`https://api.quran.com/api/v4/verses/by_chapter/${surah}?language=en&translations=${translationId},57&audio=${reciterId}&per_page=300&fields=text_uthmani,text_imlaei_simple`);
 
             if (!response.ok) throw new Error('Failed to fetch verses');
 
@@ -63,9 +71,11 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
 
             // Process data to extract translation and transliteration
             const processedVerses = data.verses.map(verse => {
-                // Extract translation (Resource 85)
-                const translationObj = verse.translations?.find(t => t.resource_id === 85);
-                const translation = translationObj?.text || "Translation not available";
+                // Extract translation (Resource ID from settings)
+                const translationObj = verse.translations?.find(t => t.resource_id === translationId);
+                const rawTranslation = translationObj?.text || "Translation not available";
+                // Clean up HTML tags from translation (e.g. footnotes)
+                const translation = rawTranslation.replace(/<[^>]*>/g, '');
 
                 // Extract transliteration (Resource 57)
                 const transliterationObj = verse.translations?.find(t => t.resource_id === 57);
@@ -82,6 +92,11 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
             });
 
             setVerses(processedVerses);
+
+            // Use names from settings if available, otherwise fallback to defaults
+            setReciterName(user?.settings?.reciterName || 'Mishary Rashid Alafasy');
+            setTranslationName(user?.settings?.translationName || 'Sahih International');
+
         } catch (err) {
             console.error("Error fetching verses:", err);
             setError('Failed to load verses. Please check your connection.');
@@ -89,6 +104,7 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
             setIsLoading(false);
         }
     };
+
 
     const setupSpeechRecognition = () => {
         if ('webkitSpeechRecognition' in window) {
@@ -146,37 +162,72 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
         }
     };
 
-    const saveProgress = (newIndex, extraUpdates = {}) => {
+    const saveProgress = (newIndex, extraUpdates = {}, shouldUpdateProgress = false) => {
         const currentSurah = user?.progress?.surah || 1;
 
-        const plan = getCurrentPlan(currentSurah, newIndex);
+        let updates = {
+            verseIndex: newIndex,
+            ...extraUpdates
+        };
 
-        let progressPercent = 0;
+        // Only recalculate progress if shouldUpdateProgress is true (when marking as memorized)
+        if (shouldUpdateProgress) {
+            const plan = getCurrentPlan(currentSurah, newIndex, user?.settings);
 
-        // Use the updated memorized list if provided, otherwise fall back to user prop
-        const allMemorized = extraUpdates.memorized || user?.progress?.memorized || {};
-        const surahMemorized = allMemorized[currentSurah] || [];
+            // Use the updated memorized list if provided, otherwise fall back to user prop
+            const allMemorized = extraUpdates.memorized || user?.progress?.memorized || {};
+            const surahMemorized = allMemorized[currentSurah] || [];
 
-        if (plan) {
-            const totalVersesInPlan = plan.endVerse - plan.startVerse + 1;
-            let memorizedInPlan = 0;
-            // Check how many verses in the plan are memorized
-            for (let i = plan.startVerse - 1; i < plan.endVerse; i++) {
-                if (surahMemorized.includes(i)) {
-                    memorizedInPlan++;
+            // Get today's date
+            const today = new Date().toDateString();
+            const lastActivityDate = user?.lastActivityDate;
+
+            // Get verses memorized today
+            let dailyMemorized = user?.progress?.dailyMemorized || [];
+
+            // Reset daily count if it's a new day
+            if (lastActivityDate !== today) {
+                dailyMemorized = [];
+            }
+
+            // Add the current verse to dailyMemorized if marking as memorized
+            if (extraUpdates.memorized) {
+                const verseKey = `${currentSurah}-${newIndex}`;
+                if (!dailyMemorized.includes(verseKey)) {
+                    dailyMemorized = [...dailyMemorized, verseKey];
                 }
             }
-            progressPercent = Math.round((memorizedInPlan / totalVersesInPlan) * 100);
-        } else {
-            // Fallback if no specific plan found (e.g. finished all plans for surah)
-            progressPercent = Math.round((surahMemorized.length / verses.length) * 100);
+
+            // Calculate daily goal completion percentage
+            const versesPerDay = user?.settings?.planType === 'custom'
+                ? (parseInt(user?.settings?.versesPerDay) || 5)
+                : Math.max(1, Math.ceil(6236 / ((parseFloat(user?.settings?.targetDuration) || 2) * 365)));
+
+            const dailyGoalPercent = Math.min(100, Math.round((dailyMemorized.length / versesPerDay) * 100));
+
+            // Calculate current plan segment progress
+            let planProgressPercent = 0;
+            if (plan) {
+                const totalVersesInPlan = plan.endVerse - plan.startVerse + 1;
+                let memorizedInPlan = 0;
+                // Check how many verses in the plan are memorized
+                for (let i = plan.startVerse - 1; i < plan.endVerse; i++) {
+                    if (surahMemorized.includes(i)) {
+                        memorizedInPlan++;
+                    }
+                }
+                planProgressPercent = Math.round((memorizedInPlan / totalVersesInPlan) * 100);
+            } else {
+                // Fallback if no specific plan found (e.g. finished all plans for surah)
+                planProgressPercent = Math.round((surahMemorized.length / verses.length) * 100);
+            }
+
+            updates.percent = dailyGoalPercent; // Use daily goal for main progress
+            updates.planProgress = planProgressPercent; // Track plan segment progress separately
+            updates.dailyMemorized = dailyMemorized;
         }
 
-        updateUserProgress({
-            verseIndex: newIndex,
-            percent: progressPercent,
-            ...extraUpdates
-        });
+        updateUserProgress(updates);
     };
 
     const handleNext = async (extraUpdates = {}) => {
@@ -185,13 +236,42 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
             setCurrentVerseIndex(newIndex);
             setIsPlaying(false);
             setFeedback('');
-            // Pass extraUpdates (like new memorized verse) to saveProgress
-            saveProgress(newIndex, extraUpdates);
+            // Pass extraUpdates and shouldUpdateProgress flag to saveProgress
+            // Only update progress if there are extraUpdates (when marking as memorized)
+            saveProgress(newIndex, extraUpdates, Object.keys(extraUpdates).length > 0);
         } else {
-            // End of Surah logic
-            setFeedback('Surah Completed! Masha\'Allah.');
-            // Save progress even if it's the last verse to ensure completion is recorded
-            saveProgress(currentVerseIndex, extraUpdates);
+            // End of current verse chunk - but check if entire Surah is complete
+            const currentSurah = user?.progress?.surah || 1;
+            const memorizedInSurah = user?.progress?.memorized?.[currentSurah] || [];
+
+            // Get total verses in current Surah from our static data
+            const totalVersesInCurrentSurah = SURAH_VERSE_COUNTS[currentSurah] || verses.length;
+
+            // Count how many verses are actually memorized in this Surah
+            // Use the updated list if available (from markAsMemorized), otherwise use current state
+            const currentMemorizedList = extraUpdates.memorized?.[currentSurah] || memorizedInSurah;
+            const memorizedCount = currentMemorizedList.length;
+
+            // Only auto-advance to next Surah if we've memorized ALL verses in current Surah
+            // Otherwise, just show completion message and stay in current Surah
+            if (memorizedCount >= totalVersesInCurrentSurah && currentSurah < 114) {
+                setFeedback('Surah Completed! Masha\'Allah! Moving to next Surah...');
+                saveProgress(currentVerseIndex, extraUpdates);
+
+                setTimeout(() => {
+                    updateUserProgress({
+                        surah: currentSurah + 1,
+                        verseIndex: 0,
+                        surahName: `Surah ${currentSurah + 1}`
+                    });
+                    setCurrentVerseIndex(0);
+                    setFeedback('');
+                }, 2000);
+            } else {
+                // End of this chunk, but Surah not fully completed
+                setFeedback('Great work! Continue memorizing the rest of this Surah.');
+                saveProgress(currentVerseIndex, extraUpdates, Object.keys(extraUpdates).length > 0);
+            }
         }
     };
 
@@ -201,7 +281,8 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
             setCurrentVerseIndex(newIndex);
             setIsPlaying(false);
             setFeedback('');
-            saveProgress(newIndex);
+            // Don't update progress when navigating backwards
+            updateUserProgress({ verseIndex: newIndex });
         }
     };
 
@@ -265,10 +346,44 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
                 </div>
             </div>
 
-            <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '20px', textAlign: 'center', position: 'relative', overflowY: 'auto' }}>
+            <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', alignItems: 'center', padding: '20px', paddingBottom: '120px', textAlign: 'center', position: 'relative', overflowY: 'auto' }}>
+
+                {/* Reciter and Translation Info */}
+                {(reciterName || translationName) && (
+                    <div style={{
+                        width: '100%',
+                        padding: '12px',
+                        background: 'rgba(212, 175, 55, 0.08)',
+                        borderRadius: '8px',
+                        marginBottom: '20px',
+                        display: 'flex',
+                        gap: '15px',
+                        justifyContent: 'center',
+                        flexWrap: 'wrap',
+                        fontSize: '0.85rem',
+                        color: 'white',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
+                    }}>
+                        {reciterName && (
+                            <div>
+                                <span style={{ color: 'var(--text-muted)', marginRight: '5px' }}>Reciter:</span>
+                                <span style={{ color: 'var(--primary)' }}>{reciterName}</span>
+                            </div>
+                        )}
+                        {translationName && (
+                            <div>
+                                <span style={{ color: 'var(--text-muted)', marginRight: '5px' }}>Translation:</span>
+                                <span style={{ color: 'var(--accent)' }}>{translationName}</span>
+                            </div>
+                        )}
+                    </div>
+                )}
+
 
                 <div style={{ marginBottom: '30px', width: '100%' }}>
-                    <h2 style={{ color: 'var(--accent)', marginBottom: '10px' }}>Verse {currentVerseIndex + 1}</h2>
+                    <h2 style={{ color: 'var(--accent)', marginBottom: '10px' }}>
+                        {SURAH_NAMES[user?.progress?.surah || 1] || `Surah ${user?.progress?.surah || 1}`} - Verse {currentVerseIndex + 1}
+                    </h2>
 
                     {/* Arabic Text */}
                     <p style={{
@@ -361,6 +476,8 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
                     />
                 )}
             </div>
+
+            <HadithFooter />
         </div>
     );
 };

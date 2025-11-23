@@ -1,19 +1,16 @@
 import React, { useState } from 'react';
-import { User, Lock, ArrowRight } from 'lucide-react';
+import { User, Lock, ArrowRight, UserCircle } from 'lucide-react';
+import { registerUser, loginUser } from '../services/database';
 
 const Login = ({ onLogin }) => {
     const [isRegistering, setIsRegistering] = useState(false);
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [firstName, setFirstName] = useState('');
+    const [lastName, setLastName] = useState('');
     const [error, setError] = useState('');
-
-    const hashPassword = async (password) => {
-        const msgBuffer = new TextEncoder().encode(password);
-        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        return hashHex;
-    };
+    const [loading, setLoading] = useState(false);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -24,59 +21,59 @@ const Login = ({ onLogin }) => {
             return;
         }
 
+        if (isRegistering) {
+            if (!firstName || !lastName) {
+                setError('Please enter your first and last name');
+                return;
+            }
+            if (password !== confirmPassword) {
+                setError('Passwords do not match');
+                return;
+            }
+            if (password.length < 6) {
+                setError('Password must be at least 6 characters');
+                return;
+            }
+        }
+
+        setLoading(true);
+
         try {
-            const users = JSON.parse(localStorage.getItem('quran_app_users') || '{}');
-
+            let result;
             if (isRegistering) {
-                if (users[username]) {
-                    setError('Username already exists');
-                    return;
-                }
-
-                const hashedPassword = await hashPassword(password);
-
-                // Create new user with initial state
-                const newUser = {
-                    username,
-                    password: hashedPassword,
-                    progress: {
-                        surah: 1,
-                        verseIndex: 0,
-                        surahName: 'Surah Al-Fatiha',
-                        percent: 0,
-                        memorized: {} // Track memorized verses by surah
-                    },
-                    streak: 0,
-                    joinedDate: new Date().toISOString()
-                };
-                users[username] = newUser;
-                localStorage.setItem('quran_app_users', JSON.stringify(users));
-                onLogin(newUser);
+                result = await registerUser(username, password, firstName, lastName);
             } else {
-                const user = users[username];
-                if (user) {
-                    const hashedPassword = await hashPassword(password);
+                result = await loginUser(username, password);
+            }
 
-                    if (user.password === hashedPassword) {
-                        onLogin(user);
-                    } else if (user.password === password) {
-                        // Migration: Stored password is plain text, but matches input
-                        console.log('Migrating password to hash...');
-                        user.password = hashedPassword;
-                        users[username] = user;
-                        localStorage.setItem('quran_app_users', JSON.stringify(users));
-                        onLogin(user);
-                    } else {
-                        setError('Invalid credentials');
-                    }
-                } else {
-                    setError('Invalid credentials');
-                }
+            if (result.success) {
+                onLogin(result.user);
+            } else {
+                setError(result.error);
             }
         } catch (error) {
-            console.error('Login error:', error);
-            setError('Error accessing storage. Please check your browser settings.');
+            console.error('Authentication error:', error);
+            setError('An unexpected error occurred. Please try again.');
+        } finally {
+            setLoading(false);
         }
+    };
+
+    const inputStyle = {
+        width: '100%',
+        padding: '12px 12px 12px 40px',
+        background: 'rgba(255,255,255,0.05)',
+        border: '1px solid var(--glass-border)',
+        borderRadius: '8px',
+        color: 'white',
+        outline: 'none'
+    };
+
+    const labelStyle = {
+        display: 'block',
+        marginBottom: '8px',
+        color: 'var(--text-muted)',
+        fontSize: '0.9rem'
     };
 
     return (
@@ -88,59 +85,126 @@ const Login = ({ onLogin }) => {
                 </div>
 
                 <form onSubmit={handleSubmit}>
+                    {isRegistering && (
+                        <>
+                            <div style={{ marginBottom: '20px' }}>
+                                <label style={labelStyle}>First Name</label>
+                                <div style={{ position: 'relative' }}>
+                                    <UserCircle size={20} style={{ position: 'absolute', left: '12px', top: '12px', color: 'var(--text-muted)' }} />
+                                    <input
+                                        type="text"
+                                        value={firstName}
+                                        onChange={(e) => setFirstName(e.target.value)}
+                                        disabled={loading}
+                                        style={inputStyle}
+                                        placeholder="Enter first name"
+                                    />
+                                </div>
+                            </div>
+
+                            <div style={{ marginBottom: '20px' }}>
+                                <label style={labelStyle}>Last Name</label>
+                                <div style={{ position: 'relative' }}>
+                                    <UserCircle size={20} style={{ position: 'absolute', left: '12px', top: '12px', color: 'var(--text-muted)' }} />
+                                    <input
+                                        type="text"
+                                        value={lastName}
+                                        onChange={(e) => setLastName(e.target.value)}
+                                        disabled={loading}
+                                        style={inputStyle}
+                                        placeholder="Enter last name"
+                                    />
+                                </div>
+                            </div>
+                        </>
+                    )}
+
                     <div style={{ marginBottom: '20px' }}>
-                        <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-muted)' }}>Username</label>
+                        <label style={labelStyle}>Username</label>
                         <div style={{ position: 'relative' }}>
                             <User size={20} style={{ position: 'absolute', left: '12px', top: '12px', color: 'var(--text-muted)' }} />
                             <input
                                 type="text"
                                 value={username}
                                 onChange={(e) => setUsername(e.target.value)}
-                                style={{
-                                    width: '100%',
-                                    padding: '12px 12px 12px 40px',
-                                    background: 'rgba(255,255,255,0.05)',
-                                    border: '1px solid var(--glass-border)',
-                                    borderRadius: '8px',
-                                    color: 'white',
-                                    outline: 'none'
-                                }}
+                                disabled={loading}
+                                style={inputStyle}
                                 placeholder="Enter username"
                             />
                         </div>
                     </div>
 
-                    <div style={{ marginBottom: '30px' }}>
-                        <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-muted)' }}>Password</label>
+                    <div style={{ marginBottom: isRegistering ? '20px' : '30px' }}>
+                        <label style={labelStyle}>Password</label>
                         <div style={{ position: 'relative' }}>
                             <Lock size={20} style={{ position: 'absolute', left: '12px', top: '12px', color: 'var(--text-muted)' }} />
                             <input
                                 type="password"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
-                                style={{
-                                    width: '100%',
-                                    padding: '12px 12px 12px 40px',
-                                    background: 'rgba(255,255,255,0.05)',
-                                    border: '1px solid var(--glass-border)',
-                                    borderRadius: '8px',
-                                    color: 'white',
-                                    outline: 'none'
-                                }}
+                                disabled={loading}
+                                style={inputStyle}
                                 placeholder="Enter password"
                             />
                         </div>
                     </div>
 
-                    {error && <p style={{ color: '#EF4444', marginBottom: '20px', textAlign: 'center' }}>{error}</p>}
+                    {isRegistering && (
+                        <div style={{ marginBottom: '30px' }}>
+                            <label style={labelStyle}>Confirm Password</label>
+                            <div style={{ position: 'relative' }}>
+                                <Lock size={20} style={{ position: 'absolute', left: '12px', top: '12px', color: 'var(--text-muted)' }} />
+                                <input
+                                    type="password"
+                                    value={confirmPassword}
+                                    onChange={(e) => setConfirmPassword(e.target.value)}
+                                    disabled={loading}
+                                    style={inputStyle}
+                                    placeholder="Re-enter password"
+                                />
+                            </div>
+                        </div>
+                    )}
 
-                    <button type="submit" className="btn-primary" style={{ width: '100%', justifyContent: 'center', marginBottom: '20px' }}>
-                        {isRegistering ? 'Start Journey' : 'Resume Session'} <ArrowRight size={20} />
+                    {error && <p style={{ color: '#EF4444', marginBottom: '20px', textAlign: 'center', fontSize: '0.9rem' }}>{error}</p>}
+
+                    <button
+                        type="submit"
+                        className="btn-primary"
+                        disabled={loading}
+                        style={{ width: '100%', justifyContent: 'center', marginBottom: '20px', opacity: loading ? 0.5 : 1 }}
+                    >
+                        {loading ? 'Please wait...' : (isRegistering ? 'Create Account' : 'Login')} <ArrowRight size={20} />
                     </button>
 
-                    <p style={{ textAlign: 'center', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => setIsRegistering(!isRegistering)}>
-                        {isRegistering ? 'Already have an account? Login' : "Don't have an account? Register"}
-                    </p>
+                    <div style={{ textAlign: 'center' }}>
+                        {!isRegistering ? (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setIsRegistering(true);
+                                    setError('');
+                                }}
+                                className="btn-outline"
+                                style={{ width: '100%', justifyContent: 'center' }}
+                            >
+                                Sign Up
+                            </button>
+                        ) : (
+                            <p
+                                style={{ color: 'var(--text-muted)', cursor: 'pointer', margin: 0 }}
+                                onClick={() => {
+                                    setIsRegistering(false);
+                                    setError('');
+                                    setFirstName('');
+                                    setLastName('');
+                                    setConfirmPassword('');
+                                }}
+                            >
+                                Already have an account? <span style={{ color: 'var(--primary)' }}>Login</span>
+                            </p>
+                        )}
+                    </div>
                 </form>
             </div>
         </div>

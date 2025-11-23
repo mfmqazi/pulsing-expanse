@@ -1,10 +1,14 @@
 import React from 'react';
 import { CheckCircle, Circle, Lock } from 'lucide-react';
-import { memorizationPlan } from '../data/memorizationPlan';
+import { generatePlan } from '../data/memorizationPlan';
+import HadithFooter from './HadithFooter';
 
 const Plan = ({ user, setView, updateUserProgress }) => {
-    const getStatus = (planItem) => {
+    const planDaysList = generatePlan(user?.settings);
+
+    const getStatus = (planItem, index, allDays) => {
         const userSurah = user?.progress?.surah || 1;
+        const userVerseIndex = user?.progress?.verseIndex || 0;
         const memorized = user?.progress?.memorized?.[planItem.surah] || [];
 
         // Count how many verses in this plan are memorized
@@ -17,34 +21,49 @@ const Plan = ({ user, setView, updateUserProgress }) => {
 
         const totalVersesInPlan = planItem.endVerse - planItem.startVerse + 1;
 
-        // Completed: All verses memorized
-        if (memorizedCount === totalVersesInPlan) return 'completed';
-
-        // Current: User is on this surah and has memorized at least one verse, OR is on correct surah but hasn't started yet
-        if (userSurah === planItem.surah) {
-            // Check if this is the furthest incomplete plan
-            const userVerse = (user?.progress?.verseIndex || 0) + 1;
-            if (userVerse >= planItem.startVerse && userVerse <= planItem.endVerse) {
-                return 'current';
-            }
-            // If we have some progress but not all, also mark as current
-            if (memorizedCount > 0) return 'current';
+        // Completed: All verses in this day's plan are memorized
+        if (memorizedCount === totalVersesInPlan) {
+            return 'completed';
         }
 
-        // If user has passed this (either different surah or beyond this plan) but NOT completed it
-        // We mark it as 'current' so they can go back and finish it.
-        // We do NOT mark it as 'completed' just because they moved past it.
-        if (userSurah > planItem.surah) return 'current';
-        const userVerse = (user?.progress?.verseIndex || 0) + 1;
-        if (userSurah === planItem.surah && userVerse > planItem.endVerse) return 'current';
+        // Current: User is currently on this surah and within or past this verse range
+        if (userSurah === planItem.surah) {
+            const currentVerse = userVerseIndex + 1;
+            // If user has passed the start of this range, it's current
+            if (currentVerse >= planItem.startVerse && currentVerse <= planItem.endVerse) {
+                return 'current';
+            }
+            // If user is past this range but not all memorized, still mark as current
+            if (currentVerse > planItem.endVerse && memorizedCount > 0) {
+                return 'current';
+            }
+        }
+
+        // If user is on a later surah, previous ones should be completed or current
+        if (userSurah > planItem.surah) {
+            // If not fully memorized but user has moved on, mark as current
+            return 'current';
+        }
+
+        // Check if previous day is completed
+        if (index > 0) {
+            const prevDay = allDays[index - 1];
+            const prevStatus = getStatus(prevDay, index - 1, allDays);
+            if (prevStatus === 'completed' || prevStatus === 'current') {
+                return 'current';
+            }
+        } else {
+            // First day is always accessible
+            return 'current';
+        }
 
         return 'locked';
     };
 
-    const planDays = memorizationPlan.map(item => ({
+    const planDays = planDaysList.map((item, index) => ({
         ...item,
         task: item.label,
-        status: getStatus(item)
+        status: getStatus(item, index, planDaysList)
     }));
 
     const handleStartClick = (planItem) => {
@@ -110,6 +129,8 @@ const Plan = ({ user, setView, updateUserProgress }) => {
                     </div>
                 ))}
             </div>
+
+            <HadithFooter />
         </div>
     );
 };

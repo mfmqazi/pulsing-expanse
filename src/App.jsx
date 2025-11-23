@@ -3,87 +3,53 @@ import Navbar from './components/Navbar';
 import Home from './components/Home';
 import Memorize from './components/Memorize';
 import Plan from './components/Plan';
+import Settings from './components/Settings';
 import Login from './components/Login';
 import { SessionToast } from './components/SessionToast';
 import DataReset from './components/DataReset';
+import { auth } from './firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { getUserData, updateUserData, logoutUser } from './services/database';
 
 function App() {
   const [currentView, setCurrentView] = useState('home');
   const [showSessionToast, setShowSessionToast] = useState(false);
-  const [user, setUser] = useState(() => {
-    try {
-      const savedUser = localStorage.getItem('quran_app_current_user');
-      if (savedUser) {
-        const parsedUser = JSON.parse(savedUser);
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-        // Sync with the users database to get the latest data
-        const users = JSON.parse(localStorage.getItem('quran_app_users') || '{}');
-        const dbUser = users[parsedUser.username];
-
-        // If user exists in database, use that (it might have more recent data)
-        if (dbUser) {
-
-          // Migrate old users: Add memorized field if missing
-          if (!dbUser.progress.memorized) {
-            dbUser.progress.memorized = {};
-            users[parsedUser.username] = dbUser;
-            localStorage.setItem('quran_app_users', JSON.stringify(users));
-          }
-
-          // Update current session with latest data from database
-          localStorage.setItem('quran_app_current_user', JSON.stringify(dbUser));
-          return dbUser;
-        }
-
-        return parsedUser;
-      }
-      return null;
-    } catch (error) {
-      console.error('❌ Error loading user session:', error);
-      localStorage.removeItem('quran_app_current_user');
-      return null;
-    }
-  });
-
-  // Ensure session stays in sync
+  // Listen to Firebase auth state changes
   useEffect(() => {
-    if (user) {
-      try {
-        // Keep current session updated
-        localStorage.setItem('quran_app_current_user', JSON.stringify(user));
-      } catch (error) {
-        console.error('Error saving user session:', error);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        // User is signed in, fetch their data from Firestore
+        const result = await getUserData(firebaseUser.uid);
+        if (result.success) {
+          setUser({ ...result.user, uid: firebaseUser.uid });
+        }
+      } else {
+        // User is signed out
+        setUser(null);
       }
-    }
-  }, [user]);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const handleLogin = (userData) => {
-    try {
-      setUser(userData);
-      localStorage.setItem('quran_app_current_user', JSON.stringify(userData));
-
-      // Also ensure it's in the users database
-      const users = JSON.parse(localStorage.getItem('quran_app_users') || '{}');
-      users[userData.username] = userData;
-      localStorage.setItem('quran_app_users', JSON.stringify(users));
-
-      // Show confirmation toast
-      setShowSessionToast(true);
-      setTimeout(() => setShowSessionToast(false), 2500);
-    } catch (error) {
-      console.error('Error logging in:', error);
-      alert('Error saving login. Please check browser storage permissions.');
-    }
+    setUser(userData);
+    setShowSessionToast(true);
+    setTimeout(() => setShowSessionToast(false), 2500);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await logoutUser();
     setUser(null);
-    localStorage.removeItem('quran_app_current_user');
     setCurrentView('home');
   };
 
-  const updateUserProgress = (newData) => {
-    if (!user) return;
+  const updateUserProgress = async (newData) => {
+    if (!user || !user.uid) return;
 
     try {
       // Separate root-level properties from progress properties
@@ -91,7 +57,7 @@ function App() {
       const progressProps = {};
 
       // Known root-level properties
-      const rootLevelKeys = ['streak', 'lastActivityDate', 'joinedDate'];
+      const rootLevelKeys = ['streak', 'lastActivityDate', 'joinedDate', 'settings'];
 
       Object.keys(newData).forEach(key => {
         if (rootLevelKeys.includes(key)) {
@@ -101,34 +67,29 @@ function App() {
         }
       });
 
-      // Build updated user with both types of properties
+      // Build updated user object
+      const updates = {};
+      if (Object.keys(rootProps).length > 0) {
+        Object.assign(updates, rootProps);
+      }
+      if (Object.keys(progressProps).length > 0) {
+        // Merge with existing progress
+        updates.progress = { ...user.progress, ...progressProps };
+      }
+
+      // Update locally first for immediate feedback
       const updatedUser = {
         ...user,
-        ...rootProps,  // Update root properties
-        progress: { ...user.progress, ...progressProps }  // Update nested progress
+        ...rootProps,
+        progress: updates.progress || user.progress
       };
-
       setUser(updatedUser);
 
-      // Immediately save to localStorage (don't wait for useEffect)
-      try {
-        localStorage.setItem('quran_app_current_user', JSON.stringify(updatedUser));
-
-        const users = JSON.parse(localStorage.getItem('quran_app_users') || '{}');
-        users[user.username] = updatedUser;
-        localStorage.setItem('quran_app_users', JSON.stringify(users));
-
-        // Verify save worked
-        const verifyUser = localStorage.getItem('quran_app_current_user');
-        if (!verifyUser) {
-          console.error('⚠️ Warning: Data may not have persisted!');
-        }
-      } catch (storageError) {
-        console.error('❌ localStorage save failed:', storageError);
-        alert('Warning: Your progress may not be saved. Check if localStorage is enabled.');
-      }
+      // Update in Firebase
+      await updateUserData(user.uid, updates);
     } catch (error) {
       console.error('❌ Error updating user:', error);
+      alert('Failed to save progress. Please check your connection.');
     }
   };
 
@@ -137,13 +98,26 @@ function App() {
       case 'home':
         return <Home setView={setCurrentView} user={user} onLogout={handleLogout} />;
       case 'memorize':
-        return <Memorize user={user} updateUserProgress={updateUserProgress} />;
+        return <Memorize user={user} updateUserProgress={updateUserProgress} setView={setCurrentView} />;
       case 'plan':
         return <Plan user={user} setView={setCurrentView} updateUserProgress={updateUserProgress} />;
+      case 'settings':
+        return <Settings setView={setCurrentView} user={user} updateUser={updateUserProgress} />;
       default:
         return <Home setView={setCurrentView} user={user} onLogout={handleLogout} />;
     }
   };
+
+  if (loading) {
+    return (
+      <div className="flex-center" style={{ height: '100vh' }}>
+        <div style={{ textAlign: 'center' }}>
+          <h2 style={{ color: 'var(--primary)' }}>Al-Hafiz</h2>
+          <p style={{ color: 'var(--text-muted)' }}>Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return <Login onLogin={handleLogin} />;

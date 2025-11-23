@@ -20,7 +20,16 @@ const Settings = ({ setView, user, updateUser }) => {
                 // Fetch Reciters
                 const recitersRes = await fetch('https://api.quran.com/api/v4/resources/recitations?language=en');
                 const recitersData = await recitersRes.json();
-                setReciters(recitersData.recitations || []);
+                const fetchedReciters = recitersData.recitations || [];
+
+                // Manually add Saad Al Ghamdi (ID 999 for custom handling)
+                const saadAlGhamdi = {
+                    id: 999,
+                    reciter_name: "Saad Al Ghamdi",
+                    style: "Murattal"
+                };
+
+                setReciters([...fetchedReciters, saadAlGhamdi]);
 
                 // Fetch Translations (English)
                 const translationsRes = await fetch('https://api.quran.com/api/v4/resources/translations?language=en');

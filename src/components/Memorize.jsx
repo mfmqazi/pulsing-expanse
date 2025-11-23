@@ -57,8 +57,15 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
         setError(null);
         try {
             const surah = user?.progress?.surah || 1;
-            const reciterId = user?.settings?.reciterId || 7; // Default to Alafasy
+            let reciterId = user?.settings?.reciterId || 7; // Default to Alafasy
             const translationId = user?.settings?.translationId || 85; // Default to Sahih International
+
+            // Handle custom reciter (Saad Al Ghamdi - ID 999)
+            // We use Alafasy (7) for the API call to get text/translation, but we'll override audio URL later
+            const isCustomReciter = reciterId === 999;
+            if (isCustomReciter) {
+                reciterId = 7;
+            }
 
             // Fetch verses with audio, translation, and transliteration
             // Increased per_page to 300 to ensure we get all verses for even the longest Surah (Al-Baqarah: 286)
@@ -83,9 +90,21 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
                 const rawTransliteration = transliterationObj?.text || "";
                 const transliteration = rawTransliteration.replace(/<[^>]*>/g, '');
 
+                let audioUrl = verse.audio?.url;
+                let isFullUrl = false;
+
+                if (isCustomReciter) {
+                    // Construct EveryAyah URL: https://everyayah.com/data/Ghamadi_40kbps/SSSVVV.mp3
+                    const surahPad = String(surah).padStart(3, '0');
+                    const versePad = String(verse.verse_key.split(':')[1]).padStart(3, '0');
+                    audioUrl = `https://everyayah.com/data/Ghamadi_40kbps/${surahPad}${versePad}.mp3`;
+                    isFullUrl = true;
+                }
+
                 return {
                     ...verse,
-                    audio_url: verse.audio?.url, // Correct path for audio
+                    audio_url: audioUrl,
+                    is_full_url: isFullUrl,
                     translation,
                     transliteration
                 };
@@ -471,7 +490,7 @@ const Memorize = ({ setView, user, updateUserProgress }) => {
                 {currentVerse?.audio_url && (
                     <audio
                         ref={audioRef}
-                        src={`https://verses.quran.com/${currentVerse.audio_url}`}
+                        src={currentVerse.is_full_url ? currentVerse.audio_url : `https://verses.quran.com/${currentVerse.audio_url}`}
                         onEnded={() => setIsPlaying(false)}
                     />
                 )}
